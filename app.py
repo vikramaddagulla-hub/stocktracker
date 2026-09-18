@@ -3,6 +3,9 @@ import streamlit as st
 import yfinance as yf
 import plotly.graph_objects as go
 import pandas as pd
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
 from google import genai
 
 # -----------------------------------------------------------------------------
@@ -224,6 +227,29 @@ with r6:
         <div class="ratio-label">Graham Number (Est.)</div>
         <div class="ratio-value">{fmt_num(graham_num, is_currency=True)}</div>
     </div>""", unsafe_allow_html=True)
+@st.cache_data(ttl=600) # Caches news for 10 minutes to prevent rate limiting
+def get_google_news(query):
+    try:
+        # Encode the company name for a URL search
+        encoded_query = urllib.parse.quote(f"{query} stock news India")
+        url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-IN&gl=IN&ceid=IN:en"
+        
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        response = urllib.request.urlopen(req)
+        root = ET.fromstring(response.read())
+        
+        news_items = []
+        # Grab the top 6 news articles
+        for item in root.findall('.//item')[:6]:
+            news_items.append({
+                'title': item.find('title').text,
+                'link': item.find('link').text,
+                'publisher': item.find('source').text,
+                'pubDate': item.find('pubDate').text
+            })
+        return news_items
+    except Exception as e:
+        return []
 
 # -----------------------------------------------------------------------------
 # 7. TABBED INTERFACE (CHART, NEWS, GEMINI CHATBOT, FINANCIALS)
@@ -271,17 +297,24 @@ with tab_chart:
 # TAB 2: NEWS
 with tab_news:
     st.markdown(f"### Recent News & Headlines for {company_name}")
-    if news_data:
-        for item in news_data[:6]:
+    
+    # Call the Google News RSS fetcher using the company name
+    live_news = get_google_news(company_name)
+    
+    if live_news:
+        for item in live_news:
             title = item.get('title', 'No Title')
             publisher = item.get('publisher', 'Unknown Source')
             link = item.get('link', '#')
+            date = item.get('pubDate', '')
             
-            # Updated HTML to match light mode aesthetic
+            # Clean up the date string slightly
+            clean_date = date[:16] if date else ""
+
             st.markdown(f"""
             <div style="background-color:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:12px; margin-bottom:10px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                 <h4 style="margin:0; font-size:16px;"><a href="{link}" target="_blank" style="color:#2563EB; text-decoration:none;">{title}</a></h4>
-                <p style="margin:4px 0 0 0; color:#64748B; font-size:12px;">Source: {publisher}</p>
+                <p style="margin:4px 0 0 0; color:#64748B; font-size:12px;">{publisher} | {clean_date}</p>
             </div>
             """, unsafe_allow_html=True)
     else:
