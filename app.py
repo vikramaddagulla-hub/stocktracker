@@ -1,16 +1,18 @@
 import os
-import streamlit as st
-import yfinance as yf
-import plotly.graph_objects as go
-import pandas as pd
+import requests
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
-from google import genai
+import streamlit as st
+import yfinance as yf
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import pandas as pd
 import PyPDF2
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import FAISS
+from google import genai
 
 # -----------------------------------------------------------------------------
 # 1. PAGE SETUP & MODERN LIGHT STYLING
@@ -24,14 +26,11 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    /* Main App Background */
     .stApp {
         background-color: #F8F9FA;
         color: #1E293B;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
-    
-    /* Company Header Card */
     .company-header {
         background: linear-gradient(135deg, #FFFFFF 0%, #F1F5F9 100%);
         border: 1px solid #E2E8F0;
@@ -40,8 +39,6 @@ st.markdown("""
         margin-bottom: 20px;
         box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02);
     }
-    
-    /* Ratio Metric Cards */
     .ratio-card {
         background-color: #FFFFFF;
         border: 1px solid #E2E8F0;
@@ -62,12 +59,8 @@ st.markdown("""
         color: #0F172A;
         font-weight: 700;
     }
-    
-    /* Positive/Negative Colors */
     .ratio-delta-pos { color: #16A34A; font-size: 14px; font-weight: 600; }
     .ratio-delta-neg { color: #DC2626; font-size: 14px; font-weight: 600; }
-    
-    /* Hide Streamlit Footer */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
 </style>
@@ -77,12 +70,9 @@ st.markdown("""
 # 2. EXTENDED NSE/BSE LOOKUP DATABASE
 # -----------------------------------------------------------------------------
 STOCK_LOOKUP = {
-    # Key Indices
     "NIFTY 50 Index": "^NSEI",
     "SENSEX Index": "^BSESN",
     "BANK NIFTY": "^NSEBANK",
-    
-    # Major Equities
     "Reliance Industries": "RELIANCE.NS",
     "Tata Consultancy Services (TCS)": "TCS.NS",
     "Infosys": "INFY.NS",
@@ -98,8 +88,6 @@ STOCK_LOOKUP = {
     "Bajaj Finance": "BAJFINANCE.NS",
     "Zomato": "ZOMATO.NS",
     "Jio Financial Services": "JIOFIN.NS",
-    
-    # Growth, Defence & Tech
     "Apollo Micro Systems": "APOLLO.NS",
     "E2E Networks": "E2E.NS",
     "HAL (Hindustan Aeronautics)": "HAL.NS",
@@ -109,7 +97,7 @@ STOCK_LOOKUP = {
 }
 
 # -----------------------------------------------------------------------------
-# 3. SIDEBAR CONFIGURATION & GEMINI API KEY HANDLING
+# 3. SIDEBAR CONFIGURATION
 # -----------------------------------------------------------------------------
 st.sidebar.title("⚡ Screener Pro AI")
 
@@ -136,24 +124,51 @@ else:
     if not user_ticker.endswith(".NS") and not user_ticker.endswith(".BO") and not user_ticker.startswith("^"):
         user_ticker += ".NS"
 
-# Adjusted slider strictly for Daily Candle views
 timeframe = st.sidebar.select_slider("Chart Period", options=["1mo", "3mo", "6mo", "1y", "2y", "5y", "max"], value="1y")
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📊 Technical Indicators")
+show_bb = st.sidebar.checkbox("Bollinger Bands (20, 2)")
+show_macd = st.sidebar.checkbox("MACD (12, 26, 9)")
+show_rsi = st.sidebar.checkbox("RSI (14)")
+
 # -----------------------------------------------------------------------------
-# 4. DATA FETCHING FUNCTION
+# 4. DATA FETCHING (Cloud Bypass & Google News)
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=300)
 def load_stock_data(symbol):
-    t = yf.Ticker(symbol)
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
+    t = yf.Ticker(symbol, session=session)
     info = t.info
-    # Fetch long-term daily data (Every row = 1 Day Candle)
     hist_daily = t.history(period="5y")
-    news = t.news
-    return info, hist_daily, news
+    return info, hist_daily
+
+@st.cache_data(ttl=600)
+def get_google_news(query):
+    try:
+        encoded_query = urllib.parse.quote(f"{query} stock news India")
+        url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-IN&gl=IN&ceid=IN:en"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        response = urllib.request.urlopen(req)
+        root = ET.fromstring(response.read())
+        news_items = []
+        for item in root.findall('.//item')[:6]:
+            news_items.append({
+                'title': item.find('title').text,
+                'link': item.find('link').text,
+                'publisher': item.find('source').text,
+                'pubDate': item.find('pubDate').text
+            })
+        return news_items
+    except Exception:
+        return []
 
 try:
     with st.spinner(f"Loading live market data for {user_ticker}..."):
-        info, hist_daily, news_data = load_stock_data(user_ticker)
+        info, hist_daily = load_stock_data(user_ticker)
 except Exception:
     st.error(f"Could not load data for symbol: `{user_ticker}`")
     st.stop()
@@ -183,7 +198,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 6. RATIOS & METRICS GRID
+# 6. RATIOS & METRICS
 # -----------------------------------------------------------------------------
 eps = info.get('trailingEps', 0)
 book_val = info.get('bookValue', 0)
@@ -202,123 +217,115 @@ def fmt_market_cap(val):
     return f"₹{val / 1e7:,.0f} Cr."
 
 with r1:
-    st.markdown(f"""<div class="ratio-card">
-        <div class="ratio-label">Market Cap</div>
-        <div class="ratio-value">{fmt_market_cap(info.get('marketCap'))}</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="ratio-card"><div class="ratio-label">Market Cap</div><div class="ratio-value">{fmt_market_cap(info.get('marketCap'))}</div></div>""", unsafe_allow_html=True)
 with r2:
-    st.markdown(f"""<div class="ratio-card">
-        <div class="ratio-label">Stock P/E</div>
-        <div class="ratio-value">{fmt_num(info.get('trailingPE'))}</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="ratio-card"><div class="ratio-label">Stock P/E</div><div class="ratio-value">{fmt_num(info.get('trailingPE'))}</div></div>""", unsafe_allow_html=True)
 with r3:
-    st.markdown(f"""<div class="ratio-card">
-        <div class="ratio-label">ROE</div>
-        <div class="ratio-value">{fmt_num(info.get('returnOnEquity', 0)*100 if info.get('returnOnEquity') else None, '%')}</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="ratio-card"><div class="ratio-label">ROE</div><div class="ratio-value">{fmt_num(info.get('returnOnEquity', 0)*100 if info.get('returnOnEquity') else None, '%')}</div></div>""", unsafe_allow_html=True)
 with r4:
-    st.markdown(f"""<div class="ratio-card">
-        <div class="ratio-label">Debt to Equity</div>
-        <div class="ratio-value">{fmt_num(info.get('debtToEquity'))}</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="ratio-card"><div class="ratio-label">Debt to Equity</div><div class="ratio-value">{fmt_num(info.get('debtToEquity'))}</div></div>""", unsafe_allow_html=True)
 with r5:
-    st.markdown(f"""<div class="ratio-card">
-        <div class="ratio-label">Price to Sales (P/S)</div>
-        <div class="ratio-value">{fmt_num(info.get('priceToSalesTrailing12Months'))}</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="ratio-card"><div class="ratio-label">Price to Sales (P/S)</div><div class="ratio-value">{fmt_num(info.get('priceToSalesTrailing12Months'))}</div></div>""", unsafe_allow_html=True)
 with r6:
-    st.markdown(f"""<div class="ratio-card">
-        <div class="ratio-label">Graham Number (Est.)</div>
-        <div class="ratio-value">{fmt_num(graham_num, is_currency=True)}</div>
-    </div>""", unsafe_allow_html=True)
-@st.cache_data(ttl=600) # Caches news for 10 minutes to prevent rate limiting
-def get_google_news(query):
-    try:
-        # Encode the company name for a URL search
-        encoded_query = urllib.parse.quote(f"{query} stock news India")
-        url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-IN&gl=IN&ceid=IN:en"
-        
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        response = urllib.request.urlopen(req)
-        root = ET.fromstring(response.read())
-        
-        news_items = []
-        # Grab the top 6 news articles
-        for item in root.findall('.//item')[:6]:
-            news_items.append({
-                'title': item.find('title').text,
-                'link': item.find('link').text,
-                'publisher': item.find('source').text,
-                'pubDate': item.find('pubDate').text
-            })
-        return news_items
-    except Exception as e:
-        return []
+    st.markdown(f"""<div class="ratio-card"><div class="ratio-label">Graham Number (Est.)</div><div class="ratio-value">{fmt_num(graham_num, is_currency=True)}</div></div>""", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 7. TABBED INTERFACE (CHART, NEWS, GEMINI CHATBOT, FINANCIALS)
+# 7. TABBED INTERFACE
 # -----------------------------------------------------------------------------
 tab_chart, tab_news, tab_ai, tab_financials = st.tabs([
-    "📉 Interactive Chart", 
-    "📰 Latest News", 
-    "🤖 Ask Anything", 
-    "📊 Balance Sheet Ratios"
+    "📉 Interactive Chart", "📰 Latest News", "🤖 Gemini Research Copilot", "📊 Balance Sheet Ratios"
 ])
 
-# TAB 1: CHART
+# TAB 1: CHART & TECHNICAL ANALYSIS
 with tab_chart:
     if not hist_daily.empty:
-        # Calculate daily SMAs on the full historical context
+        # Compute Indicators on full history to avoid cutoff
         hist_daily['SMA50'] = hist_daily['Close'].rolling(50).mean()
         hist_daily['SMA150'] = hist_daily['Close'].rolling(150).mean()
         hist_daily['SMA200'] = hist_daily['Close'].rolling(200).mean()
         
-        # Determine how many daily candles to display on the chart
-        tf_map = {"1mo": 22, "3mo": 63, "6mo": 126, "1y": 252, "2y": 504, "5y": 1260, "max": len(hist_daily)}
-        days = tf_map.get(timeframe, 252)
-        chart_data = hist_daily.tail(days)
+        # Bollinger Bands
+        hist_daily['BB_Mid'] = hist_daily['Close'].rolling(window=20).mean()
+        hist_daily['BB_Std'] = hist_daily['Close'].rolling(window=20).std()
+        hist_daily['BB_Upper'] = hist_daily['BB_Mid'] + (2 * hist_daily['BB_Std'])
+        hist_daily['BB_Lower'] = hist_daily['BB_Mid'] - (2 * hist_daily['BB_Std'])
         
-        fig = go.Figure()
+        # MACD
+        ema_12 = hist_daily['Close'].ewm(span=12, adjust=False).mean()
+        ema_26 = hist_daily['Close'].ewm(span=26, adjust=False).mean()
+        hist_daily['MACD'] = ema_12 - ema_26
+        hist_daily['MACD_Signal'] = hist_daily['MACD'].ewm(span=9, adjust=False).mean()
+        hist_daily['MACD_Hist'] = hist_daily['MACD'] - hist_daily['MACD_Signal']
+        
+        # RSI
+        delta = hist_daily['Close'].diff()
+        gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
+        loss = (-1 * delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
+        rs = gain / loss
+        hist_daily['RSI'] = 100 - (100 / (1 + rs))
 
+        # Filter by timeframe slider
+        tf_map = {"1mo": 22, "3mo": 63, "6mo": 126, "1y": 252, "2y": 504, "5y": 1260, "max": len(hist_daily)}
+        chart_data = hist_daily.tail(tf_map.get(timeframe, 252))
+        
         if not chart_data.empty:
-            # 1. Add Daily Candlestick Trace
-            fig.add_trace(go.Candlestick(
-                x=chart_data.index, open=chart_data['Open'], high=chart_data['High'],
-                low=chart_data['Low'], close=chart_data['Close'], name="Daily Price"
-            ))
+            # Dynamic Subplot Logic
+            active_subplots = sum([show_macd, show_rsi])
+            rows = 1 + active_subplots
             
-            # 2. Add Continuous 50, 150, 200 SMAs (Using softer colors for light mode)
-            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA50'], mode='lines', name='50-Day SMA', line=dict(color='#F59E0B', width=1.5)))
-            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA150'], mode='lines', name='150-Day SMA', line=dict(color='#3B82F6', width=1.5)))
-            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA200'], mode='lines', name='200-Day SMA', line=dict(color='#8B5CF6', width=1.5)))
+            if rows == 1: heights = [1.0]
+            elif rows == 2: heights = [0.7, 0.3]
+            else: heights = [0.5, 0.25, 0.25]
 
-        # Switch to plotly_white template for light background support
-        fig.update_layout(template="plotly_white", height=500, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis_rangeslider_visible=False)
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("No historical chart data available.")
+            fig = make_subplots(rows=rows, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=heights)
+
+            # Main Chart (Row 1)
+            fig.add_trace(go.Candlestick(x=chart_data.index, open=chart_data['Open'], high=chart_data['High'], low=chart_data['Low'], close=chart_data['Close'], name="Price"), row=1, col=1)
+            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA50'], mode='lines', name='50 SMA', line=dict(color='#F59E0B', width=1.5)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA150'], mode='lines', name='150 SMA', line=dict(color='#3B82F6', width=1.5)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA200'], mode='lines', name='200 SMA', line=dict(color='#8B5CF6', width=1.5)), row=1, col=1)
+
+            if show_bb:
+                fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['BB_Upper'], mode='lines', name='BB Upper', line=dict(color='#94A3B8', width=1, dash='dot')), row=1, col=1)
+                fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['BB_Lower'], mode='lines', name='BB Lower', fill='tonexty', fillcolor='rgba(148,163,184,0.1)', line=dict(color='#94A3B8', width=1, dash='dot')), row=1, col=1)
+
+            # Subplots
+            curr_row = 2
+            if show_macd:
+                colors = ['#22C55E' if val >= 0 else '#EF4444' for val in chart_data['MACD_Hist']]
+                fig.add_trace(go.Bar(x=chart_data.index, y=chart_data['MACD_Hist'], name='MACD Hist', marker_color=colors), row=curr_row, col=1)
+                fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['MACD'], mode='lines', name='MACD', line=dict(color='#3B82F6', width=1.5)), row=curr_row, col=1)
+                fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['MACD_Signal'], mode='lines', name='Signal', line=dict(color='#F59E0B', width=1.5)), row=curr_row, col=1)
+                curr_row += 1
+
+            if show_rsi:
+                fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['RSI'], mode='lines', name='RSI', line=dict(color='#8B5CF6', width=1.5)), row=curr_row, col=1)
+                fig.add_hline(y=70, line=dict(color='#EF4444', width=1, dash='dash'), row=curr_row, col=1)
+                fig.add_hline(y=30, line=dict(color='#22C55E', width=1, dash='dash'), row=curr_row, col=1)
+
+            fig.update_layout(
+                template="plotly_white", 
+                height=500 + (150 * active_subplots), 
+                margin=dict(l=10, r=10, t=10, b=10),
+                showlegend=False,
+                xaxis_rangeslider_visible=False
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
 # TAB 2: NEWS
 with tab_news:
     st.markdown(f"### Recent News & Headlines for {company_name}")
-    
-    # Call the Google News RSS fetcher using the company name
     live_news = get_google_news(company_name)
-    
     if live_news:
         for item in live_news:
             title = item.get('title', 'No Title')
             publisher = item.get('publisher', 'Unknown Source')
             link = item.get('link', '#')
-            date = item.get('pubDate', '')
-            
-            # Clean up the date string slightly
-            clean_date = date[:16] if date else ""
-
+            date = item.get('pubDate', '')[:16]
             st.markdown(f"""
             <div style="background-color:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:12px; margin-bottom:10px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                 <h4 style="margin:0; font-size:16px;"><a href="{link}" target="_blank" style="color:#2563EB; text-decoration:none;">{title}</a></h4>
-                <p style="margin:4px 0 0 0; color:#64748B; font-size:12px;">{publisher} | {clean_date}</p>
+                <p style="margin:4px 0 0 0; color:#64748B; font-size:12px;">{publisher} | {date}</p>
             </div>
             """, unsafe_allow_html=True)
     else:
@@ -326,97 +333,54 @@ with tab_news:
 
 # TAB 3: GEMINI AI CHATBOT WITH RAG
 with tab_ai:
-    st.markdown(f"### Vikram's Assistant for **{company_name}**")
+    st.markdown(f"### Assistant for **{company_name}**")
     
     if not gemini_key:
         st.warning("Please enter your free Google Gemini API Key in the left sidebar or configure it in Streamlit Secrets.")
     else:
-        # 1. RAG Document Uploader
         st.markdown("#### 📄 Upload a Document (Annual Report, Transcript) for Context")
         uploaded_file = st.file_uploader(f"Upload a PDF related to {company_name}", type=["pdf"])
         
-        # 2. Process Document into Vector Store
         if uploaded_file is not None and "vector_store" not in st.session_state:
             with st.spinner("Processing document and building RAG index..."):
-                # Extract text
                 pdf_reader = PyPDF2.PdfReader(uploaded_file)
-                raw_text = ""
-                for page in pdf_reader.pages:
-                    raw_text += page.extract_text()
-                
-                # Chunk the text
-                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-                text_chunks = text_splitter.split_text(raw_text)
-                
-                # Create embeddings and store in FAISS
+                raw_text = "".join([page.extract_text() for page in pdf_reader.pages])
+                text_chunks = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200).split_text(raw_text)
                 embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=gemini_key)
                 st.session_state.vector_store = FAISS.from_texts(text_chunks, embeddings)
                 st.success("Document embedded successfully! You can now ask questions about it.")
 
-        # 3. Chat Interface
         try:
             client = genai.Client(api_key=gemini_key)
-            
-            if "messages" not in st.session_state:
-                st.session_state.messages = []
-
+            if "messages" not in st.session_state: st.session_state.messages = []
             for message in st.session_state.messages:
-                with st.chat_message(message["role"]):
-                    st.markdown(message["content"])
+                with st.chat_message(message["role"]): st.markdown(message["content"])
 
-            if prompt := st.chat_input(f"Ask Gemini about {company_name}'s valuation, or query your uploaded document..."):
+            if prompt := st.chat_input(f"Ask Gemini about {company_name} or query your uploaded document..."):
                 st.session_state.messages.append({"role": "user", "content": prompt})
-                with st.chat_message("user"):
-                    st.markdown(prompt)
+                with st.chat_message("user"): st.markdown(prompt)
 
-                # 4. RAG Retrieval Step
                 rag_context = ""
                 if "vector_store" in st.session_state:
-                    # Retrieve the top 3 most relevant chunks to the user's prompt
                     docs = st.session_state.vector_store.similarity_search(prompt, k=3)
                     rag_context = "\n\n".join([doc.page_content for doc in docs])
 
-                # 5. Inject RAG context into the System Prompt
                 system_instruction = f"""
-                You are a senior equity research analyst specializing in Indian Stock Markets.
-                Provide structured, clear, and objective insight regarding {company_name} ({user_ticker}).
-
-                Live Financial Context for {company_name}:
-                - Current Price: ₹{current_price}
-                - P/E Ratio: {info.get('trailingPE', 'N/A')}
-                - Market Cap: ₹{info.get('marketCap', 0) / 1e7:,.2f} Cr
-                - Debt to Equity: {info.get('debtToEquity', 'N/A')}
-                - ROE: {info.get('returnOnEquity', 'N/A')}
-                - Sector: {info.get('sector', 'N/A')}
-                
-                DOCUMENT CONTEXT (From User Upload):
-                {rag_context if rag_context else "No document uploaded."}
-
-                Guidance:
-                - If the user asks a question covered by the DOCUMENT CONTEXT, prioritize answering using that information.
-                - Focus on fundamental metrics, industry positioning, and growth drivers.
-                - Do NOT offer direct legal or financial advice.
+                You are an equity research analyst.
+                Context for {company_name}: Price: ₹{current_price} | P/E: {info.get('trailingPE', 'N/A')} | Market Cap: ₹{info.get('marketCap', 0) / 1e7:,.2f} Cr
+                DOCUMENT CONTEXT: {rag_context if rag_context else "None"}
                 """
 
                 with st.chat_message("assistant"):
                     message_placeholder = st.empty()
-                    
-                    response = client.models.generate_content_stream(
-                        model='gemini-3.6-flash',
-                        contents=prompt,
-                        config={'system_instruction': system_instruction}
-                    )
-                    
+                    response = client.models.generate_content_stream(model='gemini-3.6-flash', contents=prompt, config={'system_instruction': system_instruction})
                     full_response = ""
                     for chunk in response:
                         if chunk.text:
                             full_response += chunk.text
                             message_placeholder.markdown(full_response + "▌")
-                            
                     message_placeholder.markdown(full_response)
-                    
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
-                
         except Exception as e:
             st.error(f"Error communicating with Gemini API: {e}")
 
