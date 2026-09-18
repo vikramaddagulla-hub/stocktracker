@@ -220,7 +220,7 @@ with r6:
 tab_chart, tab_news, tab_ai, tab_financials = st.tabs([
     "📉 Interactive Chart", 
     "📰 Latest News", 
-    "🤖 Gemini Research Copilot", 
+    "🤖Ask Anyything", 
     "📊 Balance Sheet Ratios"
 ])
 
