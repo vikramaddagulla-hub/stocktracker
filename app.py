@@ -7,6 +7,10 @@ import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 from google import genai
+import PyPDF2
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.vectorstores import FAISS
 
 # -----------------------------------------------------------------------------
 # 1. PAGE SETUP & MODERN LIGHT STYLING
@@ -320,13 +324,36 @@ with tab_news:
     else:
         st.info("No recent news updates found for this asset.")
 
-# TAB 3: GEMINI AI CHATBOT
+# TAB 3: GEMINI AI CHATBOT WITH RAG
 with tab_ai:
     st.markdown(f"### Vikram's Assistant for **{company_name}**")
     
     if not gemini_key:
         st.warning("Please enter your free Google Gemini API Key in the left sidebar or configure it in Streamlit Secrets.")
     else:
+        # 1. RAG Document Uploader
+        st.markdown("#### 📄 Upload a Document (Annual Report, Transcript) for Context")
+        uploaded_file = st.file_uploader(f"Upload a PDF related to {company_name}", type=["pdf"])
+        
+        # 2. Process Document into Vector Store
+        if uploaded_file is not None and "vector_store" not in st.session_state:
+            with st.spinner("Processing document and building RAG index..."):
+                # Extract text
+                pdf_reader = PyPDF2.PdfReader(uploaded_file)
+                raw_text = ""
+                for page in pdf_reader.pages:
+                    raw_text += page.extract_text()
+                
+                # Chunk the text
+                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+                text_chunks = text_splitter.split_text(raw_text)
+                
+                # Create embeddings and store in FAISS
+                embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=gemini_key)
+                st.session_state.vector_store = FAISS.from_texts(text_chunks, embeddings)
+                st.success("Document embedded successfully! You can now ask questions about it.")
+
+        # 3. Chat Interface
         try:
             client = genai.Client(api_key=gemini_key)
             
@@ -337,11 +364,19 @@ with tab_ai:
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
 
-            if prompt := st.chat_input(f"Ask Gemini about {company_name}'s valuation, risks, or financial health..."):
+            if prompt := st.chat_input(f"Ask Gemini about {company_name}'s valuation, or query your uploaded document..."):
                 st.session_state.messages.append({"role": "user", "content": prompt})
                 with st.chat_message("user"):
                     st.markdown(prompt)
 
+                # 4. RAG Retrieval Step
+                rag_context = ""
+                if "vector_store" in st.session_state:
+                    # Retrieve the top 3 most relevant chunks to the user's prompt
+                    docs = st.session_state.vector_store.similarity_search(prompt, k=3)
+                    rag_context = "\n\n".join([doc.page_content for doc in docs])
+
+                # 5. Inject RAG context into the System Prompt
                 system_instruction = f"""
                 You are a senior equity research analyst specializing in Indian Stock Markets.
                 Provide structured, clear, and objective insight regarding {company_name} ({user_ticker}).
@@ -353,11 +388,14 @@ with tab_ai:
                 - Debt to Equity: {info.get('debtToEquity', 'N/A')}
                 - ROE: {info.get('returnOnEquity', 'N/A')}
                 - Sector: {info.get('sector', 'N/A')}
-                - Business Overview: {info.get('longBusinessSummary', 'N/A')[:500]}...
+                
+                DOCUMENT CONTEXT (From User Upload):
+                {rag_context if rag_context else "No document uploaded."}
 
                 Guidance:
+                - If the user asks a question covered by the DOCUMENT CONTEXT, prioritize answering using that information.
                 - Focus on fundamental metrics, industry positioning, and growth drivers.
-                - Do NOT offer direct legal or financial advice (avoid explicit Buy/Sell recommendations).
+                - Do NOT offer direct legal or financial advice.
                 """
 
                 with st.chat_message("assistant"):
