@@ -118,8 +118,8 @@ else:
     if not user_ticker.endswith(".NS") and not user_ticker.endswith(".BO") and not user_ticker.startswith("^"):
         user_ticker += ".NS"
 
-# Default set to 1d
-timeframe = st.sidebar.select_slider("Chart Period", options=["1d", "5d", "1mo", "6mo", "1y", "5y", "max"], value="1d")
+# Adjusted slider strictly for Daily Candle views
+timeframe = st.sidebar.select_slider("Chart Period", options=["1mo", "3mo", "6mo", "1y", "2y", "5y", "max"], value="1y")
 
 # -----------------------------------------------------------------------------
 # 4. DATA FETCHING FUNCTION
@@ -128,16 +128,14 @@ timeframe = st.sidebar.select_slider("Chart Period", options=["1d", "5d", "1mo",
 def load_stock_data(symbol):
     t = yf.Ticker(symbol)
     info = t.info
-    # Fetch long-term daily data for accurate SMAs
+    # Fetch long-term daily data (Every row = 1 Day Candle)
     hist_daily = t.history(period="5y")
-    # Fetch 1-day intraday data (5-minute intervals) for the 1d chart
-    hist_1d = t.history(period="1d", interval="5m")
     news = t.news
-    return info, hist_daily, hist_1d, news
+    return info, hist_daily, news
 
 try:
     with st.spinner(f"Loading live market data for {user_ticker}..."):
-        info, hist_daily, hist_1d, news_data = load_stock_data(user_ticker)
+        info, hist_daily, news_data = load_stock_data(user_ticker)
 except Exception:
     st.error(f"Could not load data for symbol: `{user_ticker}`")
     st.stop()
@@ -146,7 +144,7 @@ except Exception:
 # 5. COMPANY HEADER
 # -----------------------------------------------------------------------------
 company_name = info.get("longName") or info.get("shortName") or selected_option
-current_price = info.get("currentPrice") or info.get("regularMarketPrice") or (hist_1d['Close'].iloc[-1] if not hist_1d.empty else (hist_daily['Close'].iloc[-1] if not hist_daily.empty else 0.0))
+current_price = info.get("currentPrice") or info.get("regularMarketPrice") or (hist_daily['Close'].iloc[-1] if not hist_daily.empty else 0.0)
 prev_close = info.get("previousClose", current_price)
 price_change = current_price - prev_close if prev_close else 0
 pct_change = (price_change / prev_close) * 100 if prev_close else 0
@@ -229,48 +227,29 @@ tab_chart, tab_news, tab_ai, tab_financials = st.tabs([
 # TAB 1: CHART
 with tab_chart:
     if not hist_daily.empty:
-        # Calculate daily SMAs on the long-term history
+        # Calculate daily SMAs on the full historical context
         hist_daily['SMA50'] = hist_daily['Close'].rolling(50).mean()
         hist_daily['SMA150'] = hist_daily['Close'].rolling(150).mean()
         hist_daily['SMA200'] = hist_daily['Close'].rolling(200).mean()
         
+        # Determine how many daily candles to display on the chart
+        tf_map = {"1mo": 22, "3mo": 63, "6mo": 126, "1y": 252, "2y": 504, "5y": 1260, "max": len(hist_daily)}
+        days = tf_map.get(timeframe, 252)
+        chart_data = hist_daily.tail(days)
+        
         fig = go.Figure()
 
-        # Render 1-Day Intraday Chart vs Long-term Daily Chart
-        if timeframe == "1d":
-            chart_data = hist_1d
-            if not chart_data.empty:
-                fig.add_trace(go.Candlestick(
-                    x=chart_data.index, open=chart_data['Open'], high=chart_data['High'],
-                    low=chart_data['Low'], close=chart_data['Close'], name="Price"
-                ))
-                
-                # Fetch the latest known daily SMAs
-                sma_50 = hist_daily['SMA50'].iloc[-1] if len(hist_daily) >= 50 else None
-                sma_150 = hist_daily['SMA150'].iloc[-1] if len(hist_daily) >= 150 else None
-                sma_200 = hist_daily['SMA200'].iloc[-1] if len(hist_daily) >= 200 else None
-                
-                # Overlay horizontal trend lines for Intraday context
-                if sma_50:
-                    fig.add_trace(go.Scatter(x=chart_data.index, y=[sma_50]*len(chart_data), mode='lines', name='50-Day SMA', line=dict(color='#E3B341', width=2, dash='dot')))
-                if sma_150:
-                    fig.add_trace(go.Scatter(x=chart_data.index, y=[sma_150]*len(chart_data), mode='lines', name='150-Day SMA', line=dict(color='#29B6F6', width=2, dash='dot')))
-                if sma_200:
-                    fig.add_trace(go.Scatter(x=chart_data.index, y=[sma_200]*len(chart_data), mode='lines', name='200-Day SMA', line=dict(color='#AB47BC', width=2, dash='dot')))
-        else:
-            tf_map = {"5d": 5, "1mo": 22, "6mo": 126, "1y": 252, "5y": 1260, "max": len(hist_daily)}
-            days = tf_map.get(timeframe, 252)
-            chart_data = hist_daily.tail(days)
+        if not chart_data.empty:
+            # 1. Add Daily Candlestick Trace
+            fig.add_trace(go.Candlestick(
+                x=chart_data.index, open=chart_data['Open'], high=chart_data['High'],
+                low=chart_data['Low'], close=chart_data['Close'], name="Daily Price"
+            ))
             
-            if not chart_data.empty:
-                fig.add_trace(go.Candlestick(
-                    x=chart_data.index, open=chart_data['Open'], high=chart_data['High'],
-                    low=chart_data['Low'], close=chart_data['Close'], name="Price"
-                ))
-                # Plot continuous curves for daily tracking
-                fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA50'], mode='lines', name='50-Day SMA', line=dict(color='#E3B341', width=1.5)))
-                fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA150'], mode='lines', name='150-Day SMA', line=dict(color='#29B6F6', width=1.5)))
-                fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA200'], mode='lines', name='200-Day SMA', line=dict(color='#AB47BC', width=1.5)))
+            # 2. Add Continuous 50, 150, 200 SMAs
+            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA50'], mode='lines', name='50-Day SMA', line=dict(color='#E3B341', width=1.5)))
+            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA150'], mode='lines', name='150-Day SMA', line=dict(color='#29B6F6', width=1.5)))
+            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA200'], mode='lines', name='200-Day SMA', line=dict(color='#AB47BC', width=1.5)))
 
         fig.update_layout(template="plotly_dark", height=500, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
@@ -299,7 +278,7 @@ with tab_ai:
     st.markdown(f"### Google Gemini Assistant for **{company_name}**")
     
     if not gemini_key:
-        st.warning("Please enter your free Google Gemini API Key in the left sidebar or configure it in Hugging Face Secrets.")
+        st.warning("Please enter your free Google Gemini API Key in the left sidebar or configure it in Streamlit Secrets.")
     else:
         try:
             client = genai.Client(api_key=gemini_key)
