@@ -93,7 +93,7 @@ STOCK_LOOKUP = {
 # -----------------------------------------------------------------------------
 # 3. SIDEBAR CONFIGURATION & GEMINI API KEY HANDLING
 # -----------------------------------------------------------------------------
-st.sidebar.title("⚡ Screener Pro AI")
+st.sidebar.title("⚡ Check Stock")
 
 # Retrieve key automatically from Hugging Face Secrets or standard environment variables
 gemini_key = os.environ.get("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", None)
