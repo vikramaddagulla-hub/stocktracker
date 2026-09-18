@@ -6,7 +6,7 @@ import pandas as pd
 from google import genai
 
 # -----------------------------------------------------------------------------
-# 1. PAGE SETUP & MODERN DARK STYLING
+# 1. PAGE SETUP & MODERN LIGHT STYLING
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="AI Screener Terminal | Indian Markets",
@@ -17,39 +17,50 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    /* Main App Background */
     .stApp {
-        background-color: #0B0E14;
-        color: #E6E8EA;
+        background-color: #F8F9FA;
+        color: #1E293B;
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
+    
+    /* Company Header Card */
     .company-header {
-        background: linear-gradient(135deg, #161B22 0%, #0D1117 100%);
-        border: 1px solid #30363D;
+        background: linear-gradient(135deg, #FFFFFF 0%, #F1F5F9 100%);
+        border: 1px solid #E2E8F0;
         border-radius: 12px;
         padding: 24px;
         margin-bottom: 20px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02);
     }
+    
+    /* Ratio Metric Cards */
     .ratio-card {
-        background-color: #161B22;
-        border: 1px solid #21262D;
+        background-color: #FFFFFF;
+        border: 1px solid #E2E8F0;
         border-radius: 8px;
         padding: 14px;
         text-align: center;
         margin-bottom: 10px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
     }
     .ratio-label {
         font-size: 12px;
-        color: #8B949E;
+        color: #64748B;
         margin-bottom: 4px;
-        font-weight: 500;
+        font-weight: 600;
     }
     .ratio-value {
         font-size: 17px;
-        color: #F0F6FC;
+        color: #0F172A;
         font-weight: 700;
     }
-    .ratio-delta-pos { color: #3FB950; font-size: 14px; font-weight: 600; }
-    .ratio-delta-neg { color: #F85149; font-size: 14px; font-weight: 600; }
+    
+    /* Positive/Negative Colors */
+    .ratio-delta-pos { color: #16A34A; font-size: 14px; font-weight: 600; }
+    .ratio-delta-neg { color: #DC2626; font-size: 14px; font-weight: 600; }
+    
+    /* Hide Streamlit Footer */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
 </style>
@@ -151,11 +162,11 @@ pct_change = (price_change / prev_close) * 100 if prev_close else 0
 
 st.markdown(f"""
 <div class="company-header">
-    <h1 style="margin:0; font-size: 28px; color: #F0F6FC;">{company_name}</h1>
-    <p style="margin:6px 0 0 0; color: #8B949E; font-size: 14px;">
+    <h1 style="margin:0; font-size: 28px; color: #0F172A;">{company_name}</h1>
+    <p style="margin:6px 0 0 0; color: #64748B; font-size: 14px;">
         {info.get('sector', 'Index / Asset')} | {info.get('industry', 'N/A')} | <b>Ticker: {user_ticker}</b>
     </p>
-    <h2 style="margin:12px 0 0 0; font-size: 32px;">
+    <h2 style="margin:12px 0 0 0; font-size: 32px; color: #0F172A;">
         ₹{current_price:,.2f} 
         <span class="{ 'ratio-delta-pos' if price_change >= 0 else 'ratio-delta-neg' }">
             {price_change:+.2f} ({pct_change:+.2f}%)
@@ -220,7 +231,7 @@ with r6:
 tab_chart, tab_news, tab_ai, tab_financials = st.tabs([
     "📉 Interactive Chart", 
     "📰 Latest News", 
-    "🤖Ask Anyything", 
+    "🤖 Ask Anything", 
     "📊 Balance Sheet Ratios"
 ])
 
@@ -246,12 +257,13 @@ with tab_chart:
                 low=chart_data['Low'], close=chart_data['Close'], name="Daily Price"
             ))
             
-            # 2. Add Continuous 50, 150, 200 SMAs
-            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA50'], mode='lines', name='50-Day SMA', line=dict(color='#E3B341', width=1.5)))
-            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA150'], mode='lines', name='150-Day SMA', line=dict(color='#29B6F6', width=1.5)))
-            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA200'], mode='lines', name='200-Day SMA', line=dict(color='#AB47BC', width=1.5)))
+            # 2. Add Continuous 50, 150, 200 SMAs (Using softer colors for light mode)
+            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA50'], mode='lines', name='50-Day SMA', line=dict(color='#F59E0B', width=1.5)))
+            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA150'], mode='lines', name='150-Day SMA', line=dict(color='#3B82F6', width=1.5)))
+            fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['SMA200'], mode='lines', name='200-Day SMA', line=dict(color='#8B5CF6', width=1.5)))
 
-        fig.update_layout(template="plotly_dark", height=500, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis_rangeslider_visible=False)
+        # Switch to plotly_white template for light background support
+        fig.update_layout(template="plotly_white", height=500, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("No historical chart data available.")
@@ -264,10 +276,12 @@ with tab_news:
             title = item.get('title', 'No Title')
             publisher = item.get('publisher', 'Unknown Source')
             link = item.get('link', '#')
+            
+            # Updated HTML to match light mode aesthetic
             st.markdown(f"""
-            <div style="background-color:#161B22; border:1px solid #30363D; border-radius:8px; padding:12px; margin-bottom:10px;">
-                <h4 style="margin:0; font-size:16px;"><a href="{link}" target="_blank" style="color:#58A6FF; text-decoration:none;">{title}</a></h4>
-                <p style="margin:4px 0 0 0; color:#8B949E; font-size:12px;">Source: {publisher}</p>
+            <div style="background-color:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; padding:12px; margin-bottom:10px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                <h4 style="margin:0; font-size:16px;"><a href="{link}" target="_blank" style="color:#2563EB; text-decoration:none;">{title}</a></h4>
+                <p style="margin:4px 0 0 0; color:#64748B; font-size:12px;">Source: {publisher}</p>
             </div>
             """, unsafe_allow_html=True)
     else:
@@ -275,7 +289,7 @@ with tab_news:
 
 # TAB 3: GEMINI AI CHATBOT
 with tab_ai:
-    st.markdown(f"### Google Gemini Assistant for **{company_name}**")
+    st.markdown(f"### Vikram's Assistant for **{company_name}**")
     
     if not gemini_key:
         st.warning("Please enter your free Google Gemini API Key in the left sidebar or configure it in Streamlit Secrets.")
